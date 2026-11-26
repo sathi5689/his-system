@@ -1,0 +1,27 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: his, POSTGRES_PASSWORD: his, POSTGRES_DB: his }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U his" --health-interval 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://his:his@localhost:5432/his?schema=public
+      AUTH_SECRET: ci-only-secret-0123456789abcdef
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npx prisma migrate deploy
+      - run: npm run db:seed
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

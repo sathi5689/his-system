@@ -1,0 +1,39 @@
+# Local / demo setup: database + app. Run with:  docker compose up --build
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: his
+      POSTGRES_PASSWORD: his
+      POSTGRES_DB: his
+      TZ: Asia/Kuala_Lumpur
+    ports:
+      - "5432:5432" # lets `npm run dev` on your PC use this database too
+    volumes:
+      - his-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U his -d his"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://his:his@db:5432/his?schema=public
+      # Demo only. Use a long random secret for any real deployment.
+      AUTH_SECRET: local-demo-secret-change-me-0123456789
+      SEED_DEMO_DATA: "true"
+      SHOW_DEMO_LOGINS: "true"
+      # Allows login over plain http://localhost. Remove when served over HTTPS.
+      INSECURE_COOKIES: "true"
+    ports:
+      - "3000:3000"
+
+volumes:
+  his-db:

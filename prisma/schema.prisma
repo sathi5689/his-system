@@ -1,0 +1,310 @@
+// REGEN HIS - Stage 1 data model
+// Money is stored as integer sen (RM 1.00 = 100) to avoid rounding errors.
+// All timestamps are stored in UTC and shown in Asia/Kuala_Lumpur.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────── Foundation ─────────────
+
+enum Role {
+  ADMIN
+  DOCTOR
+  NURSE
+  RECEPTION
+  PHARMACIST
+  LAB
+  CASHIER
+  THERAPIST
+  STORE
+}
+
+enum BranchType {
+  SPECIALIST_CLINIC
+  AMBULATORY_CARE
+  PHYSIOTHERAPY
+}
+
+model Branch {
+  id        String     @id @default(cuid())
+  code      String     @unique // short code used in invoice numbers, e.g. "KL1"
+  name      String
+  type      BranchType
+  address   String?
+  phone     String?
+  active    Boolean    @default(true)
+  createdAt DateTime   @default(now())
+
+  users        UserBranch[]
+  patients     Patient[]
+  appointments Appointment[]
+  queue        QueueTicket[]
+  invoices     Invoice[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         Role
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  branches         UserBranch[]
+  appointments     Appointment[] @relation("Practitioner")
+  auditLogs        AuditLog[]
+  consentsRecorded Consent[]
+  paymentsReceived Payment[]
+}
+
+model UserBranch {
+  userId   String
+  branchId String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@id([userId, branchId])
+}
+
+model AuditLog {
+  id       String   @id @default(cuid())
+  at       DateTime @default(now())
+  userId   String?
+  user     User?    @relation(fields: [userId], references: [id])
+  branchId String?
+  action   String // e.g. CREATE, UPDATE, VIEW, LOGIN
+  entity   String // e.g. Patient, Invoice
+  entityId String?
+  details  Json?
+  ip       String?
+
+  @@index([entity, entityId])
+  @@index([at])
+}
+
+// Atomic counters for MRN, invoice numbers, receipts and queue numbers.
+model Sequence {
+  key   String @id
+  value Int    @default(0)
+}
+
+// ───────────── Patients ─────────────
+
+enum IdType {
+  MYKAD
+  PASSPORT
+  OTHER
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  UNKNOWN
+}
+
+model Patient {
+  id                 String   @id @default(cuid())
+  mrn                String   @unique // Medical Record Number, e.g. P000001
+  fullName           String
+  idType             IdType
+  idNumber           String // MyKad stored as 12 digits without dashes
+  dob                DateTime @db.Date
+  gender             Gender
+  nationality        String   @default("Malaysian")
+  phone              String?
+  email              String?
+  address            String?
+  emergencyName      String?
+  emergencyPhone     String?
+  registeredBranchId String
+  registeredBranch   Branch   @relation(fields: [registeredBranchId], references: [id])
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  consents     Consent[]
+  appointments Appointment[]
+  queue        QueueTicket[]
+  invoices     Invoice[]
+
+  @@unique([idType, idNumber])
+  @@index([fullName])
+}
+
+enum ConsentType {
+  PDPA_DATA_PROCESSING // required to register
+  MARKETING // optional
+}
+
+enum ConsentMethod {
+  WRITTEN
+  VERBAL
+  ELECTRONIC
+}
+
+model Consent {
+  id           String        @id @default(cuid())
+  patientId    String
+  patient      Patient       @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  type         ConsentType
+  version      String // version of the notice the patient agreed to
+  granted      Boolean
+  method       ConsentMethod
+  recordedById String
+  recordedBy   User          @relation(fields: [recordedById], references: [id])
+  recordedAt   DateTime      @default(now())
+  withdrawnAt  DateTime?
+
+  @@index([patientId, type])
+}
+
+// ───────────── Appointments & Queue ─────────────
+
+enum AppointmentStatus {
+  BOOKED
+  CHECKED_IN
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+model Appointment {
+  id             String            @id @default(cuid())
+  branchId       String
+  branch         Branch            @relation(fields: [branchId], references: [id])
+  patientId      String
+  patient        Patient           @relation(fields: [patientId], references: [id])
+  practitionerId String?
+  practitioner   User?             @relation("Practitioner", fields: [practitionerId], references: [id])
+  startAt        DateTime
+  durationMin    Int               @default(15)
+  reason         String?
+  status         AppointmentStatus @default(BOOKED)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  queueTicket QueueTicket?
+
+  @@index([branchId, startAt])
+}
+
+enum QueueSource {
+  APPOINTMENT
+  WALK_IN
+}
+
+enum QueueStatus {
+  WAITING
+  CALLED
+  IN_SERVICE
+  DONE
+  SKIPPED
+}
+
+model QueueTicket {
+  id            String       @id @default(cuid())
+  branchId      String
+  branch        Branch       @relation(fields: [branchId], references: [id])
+  patientId     String
+  patient       Patient      @relation(fields: [patientId], references: [id])
+  appointmentId String?      @unique
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id])
+  queueDate     String // YYYY-MM-DD in Malaysia time; numbers restart each day
+  number        Int
+  displayNo     String // e.g. A001 (appointment) or W001 (walk-in)
+  source        QueueSource
+  status        QueueStatus  @default(WAITING)
+  room          String?
+  createdAt     DateTime     @default(now())
+  calledAt      DateTime?
+  doneAt        DateTime?
+
+  @@unique([branchId, queueDate, number])
+  @@index([branchId, queueDate, status])
+}
+
+// ───────────── Billing ─────────────
+
+model Service {
+  id       String  @id @default(cuid())
+  code     String  @unique
+  name     String
+  category String
+  priceSen Int
+  active   Boolean @default(true)
+
+  items InvoiceItem[]
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  VOID
+}
+
+model Invoice {
+  id          String        @id @default(cuid())
+  invoiceNo   String?       @unique // assigned when issued, e.g. KL1-202611-00001
+  branchId    String
+  branch      Branch        @relation(fields: [branchId], references: [id])
+  patientId   String
+  patient     Patient       @relation(fields: [patientId], references: [id])
+  status      InvoiceStatus @default(DRAFT)
+  subtotalSen Int           @default(0)
+  discountSen Int           @default(0)
+  totalSen    Int           @default(0)
+  paidSen     Int           @default(0)
+  notes       String?
+  createdById String
+  createdAt   DateTime      @default(now())
+  issuedAt    DateTime?
+  voidedAt    DateTime?
+  voidReason  String?
+
+  items    InvoiceItem[]
+  payments Payment[]
+
+  @@index([branchId, createdAt])
+}
+
+model InvoiceItem {
+  id           String   @id @default(cuid())
+  invoiceId    String
+  invoice      Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  serviceId    String?
+  service      Service? @relation(fields: [serviceId], references: [id])
+  description  String
+  qty          Int
+  unitPriceSen Int
+  amountSen    Int
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  FPX
+  DUITNOW
+  EWALLET
+}
+
+model Payment {
+  id           String        @id @default(cuid())
+  receiptNo    String        @unique
+  invoiceId    String
+  invoice      Invoice       @relation(fields: [invoiceId], references: [id])
+  method       PaymentMethod
+  amountSen    Int
+  reference    String? // card approval code, FPX / DuitNow ref, e-wallet txn id
+  receivedById String
+  receivedBy   User          @relation(fields: [receivedById], references: [id])
+  receivedAt   DateTime      @default(now())
+}
